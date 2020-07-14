@@ -1,9 +1,10 @@
+using GeneticAlghoritmAzF.Enities;
+using Microsoft.Azure.Cosmos.Table;
 using Microsoft.Azure.WebJobs;
 using Microsoft.Azure.WebJobs.Extensions.DurableTask;
-using Microsoft.Azure.WebJobs.Extensions.Http;
 using Microsoft.Extensions.Logging;
 using System.Collections.Generic;
-using System.Net.Http;
+using System.Linq;
 using System.Threading.Tasks;
 
 namespace GeneticAlghoritmAzF
@@ -12,38 +13,37 @@ namespace GeneticAlghoritmAzF
     {
         [FunctionName("PupulationEncounterOrchestrator")]
         public static async Task<List<string>> RunOrchestrator(
-            [OrchestrationTrigger] IDurableOrchestrationContext context)
+            [OrchestrationTrigger] IDurableOrchestrationContext context
+
+            )
         {
-            var outputs = new List<string>();
-
-            // Replace "hello" with the name of your Durable Activity Function.
-            outputs.Add(await context.CallActivityAsync<string>("GeneticAlghorytm_Hello", "Tokyo"));
-            outputs.Add(await context.CallActivityAsync<string>("GeneticAlghorytm_Hello", "Seattle"));
-            outputs.Add(await context.CallActivityAsync<string>("GeneticAlghorytm_Hello", "London"));
-
-            // returns ["Hello Tokyo!", "Hello Seattle!", "Hello London!"]
-            return outputs;
+            var population = context.GetInput<IList<Population>>();
+            var taskList = from pop in population
+                           select context.CallActivityAsync<string>("PupulationEncounter_Hello", pop);
+            return new List<string>(await Task.WhenAll(taskList.ToArray()));
         }
 
         [FunctionName("PupulationEncounter_Hello")]
-        public static string SayHello([ActivityTrigger] string name, ILogger log)
+        public static string SayHello([ActivityTrigger] Population pop, ILogger log)
         {
-            log.LogInformation($"Saying hello to {name}.");
-            return $"Hello {name}!";
+            return $"Hello {pop.Value}!";
         }
 
         [FunctionName("PupulationEncounter")]
-        public static async Task<HttpResponseMessage> HttpStart(
-            [HttpTrigger(AuthorizationLevel.Anonymous, "get", "post")]HttpRequestMessage req,
+        public static async Task HttpStart(
+            [QueueTrigger("population-generation")]string populationGeneration,
             [DurableClient]IDurableOrchestrationClient starter,
+             [Table("population")] CloudTable population,
             ILogger log)
         {
+            TableQuery<Population> rangeQuery = new TableQuery<Population>().Where(
+                   TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal,
+                       populationGeneration));
+            var pop = await population.ExecuteQuerySegmentedAsync(rangeQuery, null);
             // Function input comes from the request content.
-            string instanceId = await starter.StartNewAsync("GeneticAlghorytm", null);
+            string instanceId = await starter.StartNewAsync<IList<Population>>("PupulationEncounterOrchestrator", pop.Results);
 
             log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
-
-            return starter.CreateCheckStatusResponse(req, instanceId);
         }
     }
 }
