@@ -25,7 +25,7 @@ namespace GeneticAlghoritmAzF
         public async Task<IActionResult> Run(
             [HttpTrigger(AuthorizationLevel.Function, "get", "post", Route = null)] HttpRequest req,
             [Table("population")] CloudTable population,
-            [Queue("population-generation")] ICollector<string> populationGeneration,
+            [Queue("population-fitness")] ICollector<string> populationFitness,
             ILogger log)
         {
             log.LogInformation("C# HTTP trigger function processed a request.");
@@ -47,7 +47,7 @@ namespace GeneticAlghoritmAzF
                 });
             }
             await population.ExecuteBatchAsync(batchInsertOperation);
-            populationGeneration.Add("1");
+            populationFitness.Add("1");
             return popCount != null
                 ? (ActionResult)new OkObjectResult($"Initialize first population with count: {popCount}")
                 : new BadRequestObjectResult("Please pass a popCount on the query string or in the request body");
