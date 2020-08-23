@@ -24,17 +24,22 @@ namespace GeneticAlghoritmAzF
         public async Task RunOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context,
             [Table("population")] CloudTable storage,
-            [Queue("population-fitness")] ICollector<string> populationFitness)
+            [Queue("population-fitness")] ICollector<string> populationFitness,
+            ILogger log)
         {
             var parents = context.GetInput<IList<Population>>();
+            log.LogInformation($"Get parents in couples");
             var parentPairs = parents.Batch(2);
+            log.LogInformation($"Run Parents combining");
             var taskList = parentPairs.Select(a => context.CallActivityAsync<IList<int>>("Child_CreateChilds", a));
             var setOfChilds = await Task.WhenAll(taskList.ToArray());
+            log.LogInformation($"Run Mutation alghoritm");
             var taskMutantsList = setOfChilds.SelectMany(a => a).Select(a => context.CallActivityAsync<int>("Child_Mutate", a));
             var setOfFinalChilds = await Task.WhenAll(taskMutantsList.ToArray());
             var batchInsertOperation = new TableBatchOperation();
             var generation = Int32.Parse(parents.First().PartitionKey);
             generation++;
+            log.LogInformation($"Save new generation {generation} to DB");
             setOfFinalChilds.Select((a, index) => new { Child = a, index }).ToList().ForEach(a => batchInsertOperation.Insert(new Population()
             {
                 PartitionKey = generation.ToString(),
@@ -49,13 +54,20 @@ namespace GeneticAlghoritmAzF
         public IList<int> CreateChilds([ActivityTrigger] IList<Population> pop, ILogger log)
         {
             if (pop.Count == 1)
+            {
+                log.LogInformation("Single parent, return as a child");
                 return pop.Select(a => a.Value).ToList();
+            }
             else
             {
+                log.LogInformation("Combine parent");
                 var encodedValues = pop.Select(a => Convert.ToString(a.Value, 2)).ToArray();
                 var maxLength = encodedValues.Max(a => a.Length);
+                log.LogInformation("Set same length for genotype");
                 encodedValues = encodedValues.Select(a => a.PadLeft(maxLength, '0')).ToArray();
+                log.LogInformation("Get split Index");
                 var splitIndex = _random.Next(maxLength);
+                log.LogInformation("Combine parents to new Childs");
                 return new List<string>() {
                     encodedValues[0].Substring(0, splitIndex) + encodedValues[1].Substring(splitIndex),
                     encodedValues[1].Substring(0, splitIndex) + encodedValues[0].Substring(splitIndex)
@@ -66,13 +78,17 @@ namespace GeneticAlghoritmAzF
         [FunctionName("Child_Mutate")]
         public int MutateChilds([ActivityTrigger] int pop, ILogger log)
         {
-            if (_random.Next(100) < 10)
+            if (_random.Next(100) < Int32.Parse(Environment.GetEnvironmentVariable("MutationPercentage") ?? "10"))
             {
+                log.LogInformation($"Mutation for value {pop}");
                 var byteString = Convert.ToString(pop, 2);
+                log.LogInformation($"Draw bit to mutation");
                 var mutatedByte = _random.Next(byteString.Length);
                 StringBuilder sb = new StringBuilder(byteString);
+                log.LogInformation($"Mutate bit");
                 sb[mutatedByte] = byteString[mutatedByte].Equals('1') ? '0' : '1';
                 byteString = sb.ToString();
+                log.LogInformation($"Return new mtated value {Convert.ToInt32(byteString, 2)}");
                 return Convert.ToInt32(byteString, 2);
             }
             else return pop;
@@ -86,6 +102,7 @@ namespace GeneticAlghoritmAzF
              [Table("parents")] CloudTable parents,
             ILogger log)
         {
+            log.LogInformation($"Start Child select for {populationChilds} generation");
             TableQuery<Population> rangeQuery = new TableQuery<Population>().Where(
                    TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal,
                        populationChilds));
@@ -98,7 +115,7 @@ namespace GeneticAlghoritmAzF
             // Function input comes from the request content.
             string instanceId = await starter.StartNewAsync<IList<Population>>("ChildsOrchestrator", parList.ToList());
 
-            log.LogInformation($"Started orchestration with ID = '{instanceId}'.");
+            log.LogInformation($"Started Child select orchestration for {populationChilds} generation with ID = '{instanceId}'.");
         }
     }
 }
