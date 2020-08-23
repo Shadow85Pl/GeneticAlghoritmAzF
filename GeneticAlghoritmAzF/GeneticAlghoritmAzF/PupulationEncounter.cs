@@ -12,43 +12,44 @@ namespace GeneticAlghoritmAzF
 {
     public class PupulationEncounter
     {
-        private Random _random { get; }
-
-        public PupulationEncounter(Random random)
-        {
-            _random = random;
-        }
-
         [FunctionName("PupulationEncounterOrchestrator")]
         public async Task RunOrchestrator(
             [OrchestrationTrigger] IDurableOrchestrationContext context,
             [Table("population")] CloudTable storage,
-            [Queue("population-rullet")] ICollector<string> populationRulet)
+            [Table("generation")] CloudTable generation,
+            [Queue("population-roulette")] ICollector<string> populationRulet)
         {
             var population = context.GetInput<IList<Population>>();
             var taskList = from pop in population
                            select context.CallActivityAsync<Population>("PupulationEncounter_FitnessFunction", pop);
             var encountedpopulation = new List<Population>(await Task.WhenAll(taskList.ToArray()));
             var populationFitnessSum = encountedpopulation.Sum(a => a.Fitness);
-            //var rulet = new List<int>();
+
             var batchUpdateOperation = new TableBatchOperation();
             foreach (var pop in encountedpopulation)
             {
-                pop.Adaptation = 1 - (pop.Fitness / populationFitnessSum); //WHY 1- ??
-                //rulet.AddRange(Enumerable.Repeat(encountedpopulation.IndexOf(pop), (int)Math.Round(pop.Adaptation * 100, 0)));
+                pop.Adaptation = (pop.Fitness / populationFitnessSum);
+
                 batchUpdateOperation.Replace(pop);
             }
-
             storage.ExecuteBatch(batchUpdateOperation);
-            populationRulet.Add(encountedpopulation.FirstOrDefault().PartitionKey);
-            //var parents = new List<int>(rulet.OrderBy(x => _random.Next()).Take(encountedpopulation.Count));
+            var generationNumber = encountedpopulation.FirstOrDefault().PartitionKey;
+            TableOperation insertOrMergeOperation = TableOperation.InsertOrMerge(new Generation()
+            {
+                PartitionKey = generationNumber,
+                RowKey = generationNumber,
+                PopulationFitness = populationFitnessSum,
+                BestResult = encountedpopulation.Where(a => a.Adaptation == encountedpopulation.Max(a => a.Adaptation)).Select(a => a.Value.ToString()).Aggregate((a, b) => a + ", " + b)
+            });
+            generation.Execute(insertOrMergeOperation);
+            populationRulet.Add(generationNumber);
         }
 
         [FunctionName("PupulationEncounter_FitnessFunction")]
         public static Population FitnessFunction([ActivityTrigger] Population pop, ILogger log)
         {
-            //f(x)=-(x-4)^3+(x+1)^2-30
-            pop.Fitness = -Math.Pow(pop.Value - 4, 3) + Math.Pow(pop.Value + 1, 2) - 30;
+            //f(x)=2sin(0.1x)+1
+            pop.Fitness = 2 * Math.Sin(((Math.PI * pop.Value) / 180) * 0.1) + 1;
             return pop;
         }
 
@@ -59,6 +60,8 @@ namespace GeneticAlghoritmAzF
              [Table("population")] CloudTable population,
             ILogger log)
         {
+            if (Int32.Parse(populationFitness) > 10)
+                return;
             TableQuery<Population> rangeQuery = new TableQuery<Population>().Where(
                    TableQuery.GenerateFilterCondition("PartitionKey", QueryComparisons.Equal,
                        populationFitness));
